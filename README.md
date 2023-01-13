@@ -1,1 +1,1 @@
-# quadratic_model
+# Quadratic Nets and the Catapult Phase
