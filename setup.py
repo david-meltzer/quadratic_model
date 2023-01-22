@@ -15,7 +15,7 @@ setup(
     license='MIT License',
     author='David Meltzer',
     author_email='davidhmeltzer@gmail.com',
-    install_requires=INSTALL_REQUIRES,
+#    install_requires=INSTALL_REQUIRES,
     url='https://github.com/david-meltzer/quadratic_model',
     long_description=long_description,
     packages=find_packages(),
