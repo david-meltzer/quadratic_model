@@ -7,11 +7,11 @@ with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
     
 INSTALL_REQUIRES = [
-functorch==1.13.1,
-matplotlib==3.6.3,
-num2words==0.5.12,
-numpy==1.24.1,
-torch==1.13.1
+'functorch==1.13.1',
+'matplotlib==3.6.3',
+'num2words==0.5.12',
+'numpy==1.24.1',
+'torch==1.13.1'
 ]
 
 setup(
