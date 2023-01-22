@@ -15,7 +15,7 @@ INSTALL_REQUIRES = [
 ]
 
 setup(
-    name='Quadratic Model',
+    name='QuadraticModel',
     author='David Meltzer',
     author_email='davidhmeltzer@gmail.com',
     install_requires=INSTALL_REQUIRES,
