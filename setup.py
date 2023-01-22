@@ -8,7 +8,8 @@ with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     
 INSTALL_REQUIRES = [
     'torch>=1.13.1',
-    'functorch>=1.13.1'
+    'functorch>=1.13.1',
+    'num2words'
 ]
 
 setup(
