@@ -6,16 +6,17 @@ this_directory = path.abspath(path.dirname(__file__))
 with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
     
-#INSTALL_REQUIRES = [
-#    'jax>=0.1.77',
-#]
+INSTALL_REQUIRES = [
+    'torch>=1.13.1',
+    'functorch>=1.13.1'
+]
 
 setup(
     name='Quadratic Model',
     license='MIT License',
     author='David Meltzer',
     author_email='davidhmeltzer@gmail.com',
-#    install_requires=INSTALL_REQUIRES,
+    install_requires=INSTALL_REQUIRES,
     url='https://github.com/david-meltzer/quadratic_model',
     long_description=long_description,
     packages=find_packages(),
