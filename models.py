@@ -74,7 +74,7 @@ def generate_orth_matrix(input_dim,hidden_dim,matrix_dist):
 
     - matrix_dist (dict): Dictionary with keys 'dist' and 'params'.
         matrix_dist['dist'] = 'uniform' or 'normal'.
-        matrix_dist['params'] = (a_1,a_2).
+        matrix_dist['params'] = (a_1,a_2) of type (float,float).
         if 'dist'=uniform then sample from U([a_1,a_2]).
         if 'dist'=normal then sample from N(a_1,a_2).
 
@@ -115,7 +115,7 @@ def generate_matrix(input_dim,hidden_dim,matrix_dist,eval_dist):
     - hidden_dim (int): Rank of the meta-feature function matrix.
     - matrix_dist (dict): Dictionary used to construct matrix B (eqn 187).
         matrix_dist['dist'] = 'uniform' or 'normal'.
-        matrix_dist['params'] = (a_1,a_2).
+        matrix_dist['params'] = (a_1,a_2) of type (float,float).
         if 'dist'=uniform then sample from U([a_1,a_2]).
         if 'dist'=normal then sample from N(a_1,a_2)
     - eval_dist (dict): Dictionary used to construct the positive eigenvalues (eqn 186).
@@ -138,7 +138,7 @@ def generate_matrix(input_dim,hidden_dim,matrix_dist,eval_dist):
     else:
         raise Exception("Distribution for eigenvalues should be 'uniform' or 'normal'.")
 
-    #Assuming that eigenvalues come in positive/negative pairs.
+    #Assume that eigenvalues come in positive/negative pairs.
     evals_neg = -1*evals_pos
     
     #Concatenate eigenvalues.
@@ -166,7 +166,7 @@ class LinearFeature(nn.Module):
                        Student feature function has dimension = hidden_dim-masked_dim.
     - flatten (module): Flattens non-batch dimensions.
     - matrix (tensor): Tensor with shape (input_dim,hidden_dim). Named "U" in equation 184 of paper.
-    - student_hidden_dim (int): Dimension of student feature function.
+    - student_feat_dim (int): Dimension of student feature function.
     - proj (tensor): projector matrix which maps from teacher feature function to student feature function.
 
     Methods:
@@ -204,8 +204,7 @@ class LinearFeature(nn.Module):
                                    self.student_feat_dim,
                                    replace=False)
         indices.sort()
-        
-        self.proj[indices,np.arange(self.student_hidden_dim)]=1
+        self.proj[indices,np.arange(self.student_feat_dim)]=1
         self.proj=self.proj.to(device)
 
     def forward(self,x_in,teacher=False):
@@ -286,18 +285,21 @@ class MetaFeature(nn.Module):
 
         super().__init__()
 
+        #if matrix_dist or eval_dist is None, set them to default values.
         if matrix_dist is None:
             matrix_dist={'dist':'normal','params':(0,1)}
         
         if eval_dist is None:
             eval_dist={'dist':'uniform','params':(1,1)}
         
+        #Construct matrix W in linear meta-feature function.
         meta_matrix=generate_matrix(input_dim,
                                          hidden_dim,
                                          matrix_dist,
                                          eval_dist)
 
-        meta_matrix=meta_matrix.to(device)  
+        self.meta_matrix=meta_matrix.to(device)  
+        #Rank of the student meta-feature function.
         student_hidden_dim = hidden_dim-masks
 
         self.flatten = nn.Flatten()
@@ -335,6 +337,7 @@ class MetaFeature(nn.Module):
         out = act_function(out,self.activation_name,self.negative_slope)
 
         if teacher==False:
+            #if teacher==False use student model.
             out = torch.einsum('Nr,bNP,Pq->brq',self.proj,out,self.proj)
 
         return out
@@ -409,11 +412,17 @@ class Quadratic(nn.Module):
         - X: Input batch of data. Tensor of shape (B,d)
              B = # of data-points. d = dimension of input data.
         - teacher: If true, use teacher model. Else use student model.
+
+        Output:
+        - z(X) in pure quadratic model.
+          Tensor of shape [B].
         """
 
         out = self.meta_feature(X,teacher)
 
         if teacher is True:
+            # b is index for batch dimension.
+            # m,n are indices for weights.
             out = torch.einsum('bmn,m,n->b',out,self.theta_teacher,self.theta_teacher)
             out *= .5*self.zeta_teacher
         else:
@@ -440,8 +449,8 @@ class quadratic_with_bias(nn.Module):
 
     Methods:
     - get_parameters: Returns (student_hidden_dim,zeta_student,theta_student_meta,theta_student_feat)
-    - get_feature: Returns feature function.
-    - get_metafeature: Returns meta-feature function.
+    - get_feature: Returns feature function (module).
+    - get_metafeature: Returns meta-feature function (module).
     - forward: Computes output z(x) in quadratic model with bias.
 
     """
@@ -449,7 +458,10 @@ class quadratic_with_bias(nn.Module):
     def __init__(self,input_dim=2,feat_dim=10,
                  masked_feats=0,meta_dim=10,
                  masks_metafeats=0,matrix_dist=None,
-                 eval_dist=None,slope=1,act_name='identity',device=device):
+                 eval_dist=None,
+                 slope=1,
+                 act_name='identity',
+                 device=device):
         
         """ Initializes quadratic model with bias.
         Inputs:
@@ -467,6 +479,7 @@ class quadratic_with_bias(nn.Module):
     
         super().__init__()
 
+        #If set to None, initialize matrix_dist or eval_dist to default values.
         if matrix_dist is None:
             matrix_dist={'dist':'normal','params':(0,1)}
         
@@ -490,7 +503,7 @@ class quadratic_with_bias(nn.Module):
         self.student_hidden_dim = tot_hidden_dim - total_masked
 
         self.zeta_teacher = (.5*meta_dim)**(-.5)
-        self.zeta_student = (.5*(meta_dim-self.masks_meta_feats))**(-.5)
+        self.zeta_student = (.5*(meta_dim-masks_metafeats))**(-.5)
 
         self.theta_teacher_feat=torch.randn(feat_dim)
         self.theta_teacher_meta=torch.randn(meta_dim)
@@ -531,11 +544,17 @@ class quadratic_with_bias(nn.Module):
         - X (tensor): Input batch of data with shape (B,input_dim)
                       B = # of datapoints.
         - teacher (bool): If true use teacher model. Else use student model.
-        """
 
+        Output:
+        - z(X), or output of pure quadratic model on batch of data.
+          Tensor of shape [B].
+        """
+        # (meta-)feature functions evaluated on a batch of data.
         feat_X = self.feature(X,teacher)
         meta_X = self.meta_feature(X,teacher)
 
+        #b is an index for the batch dimension.
+        #m,n are indices for the weight dimensions.
         if teacher is True:
             feat_out = torch.einsum('bm,m->b',feat_X,self.theta_teacher_feat)
             meta_out = torch.einsum('bmn,m,n->b',meta_X,self.theta_teacher_meta
@@ -595,19 +614,22 @@ class MLPGeneral(nn.Module):
         - slope (float): Slope of leaky_relu function in negative region. Only needed if activation=='leaky_relu'.
         """
         
-        super(MLPGeneral, self).__init__()
+        super().__init__()
         
         self.flatten = nn.Flatten()
         self.input_size = input_size
         self.num_hidden_layers = num_hidden_layers
         self.width = width
 
+        #non-linearity used in MLP.
         activation=act_layer(activation,slope)
       
+        #Map from input data to first hidden layer.
         self.fc1 = nn.Sequential(
             nn.Linear(input_size,width,bias=bias_value),
             activation)
     
+        #fc_int correspond to additional hidden layers. 
         layers = []
         for _ in range(num_hidden_layers-1):
             layers.append(nn.Linear(width, width,bias=bias_value))
@@ -615,8 +637,10 @@ class MLPGeneral(nn.Module):
     
         self.fc_int = nn.Sequential(*layers)
 
+        #Map from hidden layer to output layer.
         self.fc_final = nn.Linear(width, output_size,bias=bias_value)
-          
+        
+        #initialize weights.
         self.apply(self.init_weights)
     
 ###############################################################################    
@@ -643,12 +667,17 @@ class MLPGeneral(nn.Module):
         - X (tensor): Input batch of data with shape (B,input_dim).
                       B = # of datapoints. 
 
+        Output:
+        - logits (tensor): Final layer of MLP. Used as input in MSE loss.
+                           Shape [B,output_size].
+
         """
         X = self.flatten(X)
         X = self.fc1(X)
         X = self.fc_int(X)
         logits = self.fc_final(X)
 
+        #Normalize data using NTK initialization.
         logits *= (self.input_size)**(-.5)
         logits *= ((self.width)**self.num_hidden_layers)**(-.5)
 

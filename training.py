@@ -1,23 +1,15 @@
-#import models_V2
-#import NTK_eigensystem
 from NTK_eigensystem import eigen_NTK, avg_eigen_system, sparsity_avg
 
 import os
 import pickle
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 from misc import file_path
 torch.set_printoptions(precision=3)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-#archs={}
-#archs['quadratic']=Quadratic
-#archs['qbias']=quadratic_with_bias
-#archs['MLP_General']=MLPGeneral
 
 def num_parameters(model,trainable=True):
     """
@@ -115,13 +107,20 @@ def train_loop(arch,
     If data_eigen==True then result['data_top_eval'] = top eigenvalue of covariance matrix.
     
     """
-    
 
     result={}
     dataset_name=dataset['name']
     arch_name = arch.__name__
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+    model = arch(**model_dict)
+    model.to(device)
+    model.train()
   
-    model_writing_path = file_path('data/','.pt',
+    model_writing_path = file_path('./data/','.pt',
                                    arch=arch_name,
                                    custom='model_'+dataset_name,
                                    model_dict=model_dict,
@@ -131,7 +130,7 @@ def train_loop(arch,
                                    stop_criterion=stop_criterion,
                                    seed=seed)
     
-    result_file = file_path('results/','.pkl',
+    result_file = file_path('./results/','.pkl',
                             custom='result_'+dataset_name,
                             arch=arch_name,
                             model_dict=model_dict,
@@ -146,19 +145,13 @@ def train_loop(arch,
             result=pickle.load(f)
         if verbose:
             print('training already done')
-        return result
-
-    if seed is not None:
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-    
-    model = arch(**model_dict)
-    model.to(device)
-    model.train()
+        model.load_state_dict(torch.load(model_writing_path))
+        return model, result
     
     if reading_path:
         model.load_state_dict(torch.load(reading_path))
     
+    #Will contain lists of loss, weight norm and lrNTK during training.
     loss_list = []
     weight_norm_list = []
     lrNTK_list=[]
@@ -167,11 +160,13 @@ def train_loop(arch,
                         train_batch_size,shuffle=True,
                         drop_last=True)
     
+    # In the teacher/student set-up we do not use separate labels in the dataset.
     if type(next(iter(dataloader))) in (tuple,list):
         teacher_mode=False
     else:
         teacher_mode=True
         
+    # If top eigenvalue of the NTK is not given, wer compute it here.
     if top_eigen is None:
         with torch.no_grad():
 
@@ -188,13 +183,16 @@ def train_loop(arch,
     else:
         top_eval=top_eigen
 
+    #Total number of parameters in model.
     num_params=num_parameters(model)
+    # initial value of the weight norm.
     weight_norm_list.append(weight_norm(model)/num_params)
+    # Initial value of learning rate times top eigenvalue of NTK.
     lrNTK_list.append(lr_ratio)
+    # lr is actual learning rate used during training.
     lr = lr_ratio/top_eval
 
-    if verbose:
-        print(f"initial max eigen {top_eval:5f}") 
+    #Train model using SGD.
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     train=True
@@ -217,7 +215,7 @@ def train_loop(arch,
                 X = data_tup[0].to(device)
                 y = data_tup[1].to(device)
                 pred = model(X)
-
+            #Train model using MSE loss.
             loss_fn = nn.MSELoss()
             loss = 1/2.*loss_fn(pred.squeeze(),y.float().squeeze())      
 
@@ -226,12 +224,14 @@ def train_loop(arch,
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            
+            #Compute top eigenvalue of covariance matrix.
             if data_eigen and ep_count==1:
                 cov = X@X.T
                 cov /= cov.shape[0]
                 data_top_eval+= torch.linalg.eigh(cov)[0][-1].cpu().numpy()
 
+            # If model diverges stop training.
             if torch.isnan(loss):
                 if write_file:
                     torch.save(model.state_dict(),model_writing_path)
@@ -246,18 +246,20 @@ def train_loop(arch,
                 result['weight_norm']=weight_norm_list
                 result['lrNTK']=lrNTK_list
 
-                with open(result_file,'wb') as f:
-                    pickle.dump(result,f)
+                if write_file:
+                    with open(result_file,'wb') as f:
+                        pickle.dump(result,f)
 
-                return result
-      
+                return model, result
+            #Accumulate the loss over the epoch.
             loss = loss.item()
             loss_tot+=loss
 
-    
+        # Loss and weight norm at end of epoch.
         loss_list.append(loss)
         weight_norm_list.append(weight_norm(model)/num_params)
         
+        # Compute NTK eigenvalues at the end of each epoch.
         with torch.no_grad():
             try:
                 NTK_evals,_ = eigen_NTK(model,X,reading_path=None,device=device)
@@ -266,20 +268,18 @@ def train_loop(arch,
             except:
                 lrNTK_list.append(float('inf'))
                 
-            if verbose and ep_count%printevery == 0:
-                print(f'epoch: {ep_count}, loss: {loss}, NTK: {lrNTK_list[-1]}')
+            if verbose and (ep_count-1)%printevery == 0:
+                print(f'epoch/total: {ep_count-1}/{max_epochs}, train loss: {loss:.16f}, lrNTK: {lrNTK_list[-1]:.16f}')
         
-        if verbose and ep_count%printevery==0:
-            print(f'old_loss is {old_loss}.')
-            print(f'loss_tot is {loss_tot}.')
-            print(f'difference is {abs(old_loss-loss_tot)}')
+        # If change in loss is < stop criterion we stop training.
         if abs(old_loss-loss_tot)<stop_criterion:
             train=False
         
         old_loss=loss_tot
+        #iterate count of epochs.
         ep_count+=1
         
-
+    #Store final results in result dictionary.
     result['loss']=loss_list
     result['weight_norm']=weight_norm_list
     result['lrNTK']=lrNTK_list
@@ -381,15 +381,18 @@ def full_training_loop(arch,
     """
 
     result={}
-        
+    
+    #Set seed if given.
     if seed is not None:
         torch.manual_seed(seed)
         np.random.seed(seed)
         result['seed']=seed
 
+    #initialize model.
     model = arch(**model_dict)
     model.to(device)
 
+    #name of dataset and architecture.
     dataset_name=dataset['name']
     arch_name = arch.__name__
 
@@ -408,8 +411,8 @@ def full_training_loop(arch,
         
     if verbose:
         print('computing averaged top eigenvalues and eigenvectors')
-        
-    eigen_file=file_path('results/','.pkl',
+    # File used to save eigensystem of NTK.
+    eigen_file=file_path('./data/','.pkl',
                          custom='eigen_system_'+dataset_name,
                          arch=arch_name,
                          model_dict=model_dict,
@@ -426,6 +429,7 @@ def full_training_loop(arch,
             print('eigenvalues already computed')
 
     else:
+        # Compute eigensystem for given model.
         eigen_tupl = avg_eigen_system(model,dataloader,
                                      device=device,
                                      printevery=printevery,
@@ -434,24 +438,25 @@ def full_training_loop(arch,
         if write_file:
             with open(eigen_file,'wb') as f:
                 pickle.dump(eigen_tupl,f)
-
+    # top eigenvalue of eigenvector of NTK.
     top_avg_eval = eigen_tupl[0][-1]
     top_avg_evec = eigen_tupl[1][-1]
 
     top_avg_evec=top_avg_evec/torch.sqrt(top_avg_evec@top_avg_evec)
     
-    if arch in ('Quadratic','quadratic_with_bias'):
+    # store model specific parameters in result dictionary.
+    if arch_name in ('Quadratic','quadratic_with_bias'):
 
         param_tup = model.get_parameters()
         result['zeta']=param_tup[1] 
         result['init_weight_norm']=(result['zeta']**2)*weight_norm(model)
 
-        if arch=='Quadratic':
+        if arch_name=='Quadratic':
 
             result['meta_eigens']=(eigen_tupl[2],eigen_tupl[3])
             result['omega_eigens']=(eigen_tupl[4],eigen_tupl[5])
         
-        if arch=='quadratic_with_bias':
+        if arch_name=='quadratic_with_bias':
 
             result['meta_eigens']=eigen_tupl[2]
             result['overlap']=eigen_tupl[3]
@@ -463,10 +468,11 @@ def full_training_loop(arch,
     
     result['NTK_top_eigen']=top_avg_eval
     
+    
     for lr_ratio in lr_ratios:
         if verbose:
-            print(f'lr_ratio is {lr_ratio}')
-
+            print('\n'+f'Training at lr_ratio: {lr_ratio}')
+        # Train the model at each learning rate.
         model, result['lr_ratio',lr_ratio] = train_loop(arch,
                     model_dict,
                     lr_ratio,
@@ -484,31 +490,35 @@ def full_training_loop(arch,
                     overwrite=overwrite,
                     data_eigen=data_eigen)
         
-
+        # Compute final train and/or test loss at each learning rate.
+        if verbose:
+            print("Computing final values of train and/or test loss.")
         loss_dict=train_test_loss(model,dataset,
-                                      train_batch_size,print_every=printevery,
-                                      verbose=verbose)
+                                      train_batch_size,
+                                      verbose=False,
+                                      print_every=printevery)
         result['lr_ratio',lr_ratio]['losses'] = loss_dict
 
-        if arch_name=='MLPGeneral' and model_dict['slope']==0:
+        # Compute final sparsity at each learning rate.
+        if arch_name=='MLPGeneral':
+            if model_dict['activation']=='relu' or ('slope' in model_dict and model_dict['slope']==0):
             
-            spars=sparsity_avg(model_dict,dataset,
+                if verbose:
+                    print("Computing final value of sparsity.")
+                spars=sparsity_avg(model,dataset,
                        train_batch_size,
                        device=device,
-                       printevery=25,verbose=True)
+                       printevery=printevery,verbose=verbose)
             
-            result['lr_ratio',lr_ratio]['sparsity']=spars
+                result['lr_ratio',lr_ratio]['sparsity']=spars
         
 
+    # 'slope' and 'data_top_eval' are only relevant for MLPs.
     if 'slope' in model_dict:
         result['slope']=model_dict['slope']
     
     if 'data_top_eval' in result['lr_ratio',lr_ratios[0]]:
         result['data_top_eval']=result['lr_ratio',lr_ratios[0]]['data_top_eval']
-
-        for lr_ratio in lr_ratios:
-            # Avoid redundantly storing 'data_top_eval'.
-            del result['lr_ratio',lr_ratio]['data_top_eval']
 
     pred=prediction(result)
     result['pred']=pred
@@ -555,16 +565,14 @@ def prediction(result):
     if result['arch']=='Quadratic':
         
         zeta=result['zeta']
-        top_eval_eff_meta_sq, min_eval_eff_meta_sq = result['meta_eigens']
+        top_eval_eff_meta_sq, _ = result['meta_eigens']
 
         bound_upper = 4/(init_weight_norm*top_eval_eff_meta_sq)
-
-        top_eval_omega, min_eval_omega = result['omega_eigens']
-
+        top_eval_omega, _ = result['omega_eigens']
         bound_upper_omega= 4*zeta**2/(top_eval_omega*init_weight_norm)
 
-        pred['upper_omega']=bound_upper_omega*top_eval
-        
+        # See equations 138 and 154.
+        pred['upper_omega']=(bound_upper_omega*top_eval)
         pred['upper'] = (bound_upper*top_eval)
 
 
@@ -579,19 +587,22 @@ def prediction(result):
         denominator += init_weight_norm*top_eval_eff_meta_sq
         denominator += (zeta**2)*(top_eval_eff_meta_sq)*overlap
 
+        # See equation 163.
         bound_upper= (4/denominator).cpu().item()
-        pred['upper'] = bound_upper*top_eval
+        pred['upper'] = (bound_upper*top_eval)
     else:
+        
         data_top_eval=1 
         if 'data_top_eval' in result:
+            
             data_top_eval=result['data_top_eval']
         if 'slope' in result and result['slope']==0:
+            # See equation 130.
             pred['upper']=4
-        else:    
+        else: 
+            # See equation 180.   
             pred['upper'] = (4/(2*init_weight_norm*data_top_eval))*top_eval
-        if 'slope' in result and result['slope']!=0:
-            neg_slope=result['slope']
-        
+
     return pred
 
 ###############################################################################
@@ -599,9 +610,7 @@ def prediction(result):
 def total_loss(model,dataloader,
                reading_path=None,
                device=device,
-               reduction='sum',
-               verbose=True,
-               printevery=20):
+               reduction='sum'):
 
     """
     Computes MSE loss.
@@ -629,9 +638,7 @@ def total_loss(model,dataloader,
         tot_loss = 0.
         model.to(device)
 
-        for batch, data_tup in enumerate(dataloader):
-            if (batch % printevery == 0) and verbose:
-                print(f"Working on batch # {batch}")
+        for data_tup in dataloader:
       
             if type(data_tup) in (tuple,list):
                 X=data_tup[0].to(device)
@@ -657,41 +664,47 @@ def total_loss(model,dataloader,
 def train_test_loss(model,
                     dataset,
                     batch_size,
-                    print_every=10,
-                    verbose=False):
+                    verbose,
+                    print_every=10):
     """
     Computes MSE loss for train and test loss as a function of the learning rate.
 
     Inputs:
+    - model (module): instance of architecture being studied.
+    - dataset (dict): Dictionary containing info about dataset.
+                      dataset['name'] = name of dataset (str).
+                      dataset['train']= training set (tensor).
+                      dataset['test'] = test set (tensor). 
+
+    Output:
+    - loss_dict (dict): Dictionary containing final values of training and test loss.
+                        Has keys, 'train' and/or 'test'.
 
     """
+
 
     loss_dict={}
 
     train_set = dataset['train']
-    test_set = dataset['test']
-
     train_dataloader = DataLoader(train_set, 
                               batch_size = batch_size,
                               shuffle=True)
-  
-    test_dataloader = DataLoader(test_set,
+
+    loss_dict['train'] = total_loss(model,train_dataloader,
+                                        reading_path=None,device=device,
+                                        reduction='sum')
+    
+    if 'test' in dataset:
+        
+        test_set = dataset['test']
+        test_dataloader = DataLoader(test_set,
                              batch_size = batch_size,
                              shuffle=False)
 
-    if verbose:
-        print("Computing train loss")
-        loss_dict['train'] = total_loss(model,train_dataloader,
-                                        reading_path=None,device=device,
-                                        printevery=print_every,verbose=False,
-                                        reduction='sum')
-    if verbose:
-        print("Computing test loss")
-    loss_dict['test'] = total_loss(model,test_dataloader,reading_path=None,
-                                   device=device,printevery=print_every,
-                                   verbose=False,reduction='sum')  
-  
-    if verbose:
-        print(f"(Train loss, Test loss) = {(loss_dict['train'],loss_dict['test'])}")  
+        loss_dict['test'] = total_loss(model,test_dataloader,reading_path=None,
+                                   device=device,
+                                   reduction='sum')   
 
+    
+    
     return loss_dict
