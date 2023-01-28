@@ -1,4 +1,10 @@
-from NTK_eigensystem import eigen_NTK, avg_eigen_system, sparsity_avg
+"""
+Collects functions to run training loop and compute theoretical predictions.
+"""
+
+from quadratic_model.NTK_eigensystem import eigen_NTK, avg_eigen_system, sparsity_avg
+from quadratic_model.misc import file_path
+
 
 import os
 import pickle
@@ -6,7 +12,6 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from misc import file_path
 torch.set_printoptions(precision=3)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
