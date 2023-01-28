@@ -1,6 +1,6 @@
 # Quadratic Nets and the Catapult Phase
 
-This repository contains supplementary code for [Catapult Dynamics and Phase Transitions in Quadratic Nets](https://arxiv.org/abs/2301.07737). All experiments were carried out in PyTorch using Google Colab Pro.
+This repository contains supplementary code for [Catapult Dynamics and Phase Transitions in Quadratic Nets](https://arxiv.org/abs/2301.07737). All experiments were carried out using PyTorch and Google Colab Pro.
 
 
 # Summary
